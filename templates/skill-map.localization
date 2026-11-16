@@ -1,0 +1,3 @@
+*/Scripts/translations/* localization
+*.resx localization
+*Resources.Designer.cs localization

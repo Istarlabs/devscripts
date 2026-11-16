@@ -1,0 +1,12 @@
+# This checkout runs its own scripts: Scripts/repo.py and Scripts/spdx.py are shims pointing one
+# directory up, at the real ones. Nothing here is a .NET project, so there is no [dotnet] block and
+# install.py writes no dotnet.py - which is the config-driven selection working on itself.
+name = "devscripts"
+env_prefix = "DEVSCRIPTS"
+
+[spdx]
+holder = "Pascal Klose"
+licence = "GPL-3.0-or-later"
+
+[repo]
+main_branch = "master"

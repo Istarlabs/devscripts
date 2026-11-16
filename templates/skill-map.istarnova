@@ -1,0 +1,14 @@
+# Which skill covers which files, for the hooks' skill doorbell (devscripts/hooks/load-the-skill.sh).
+# One "<glob> <skill>" per line; the first match wins, so the more specific patterns come first.
+*.razor blazor-ui
+*.razor.cs blazor-ui
+*.razor.css blazor-ui
+*Database.Entities/* data-layer
+*Database.Sql.Configurations/* data-layer
+*Core.Services.Repositories/* data-layer
+*Database.EfCore/* data-layer
+*.Log.cs logging
+*.razor.Log.cs logging
+*/Logging/* logging
+# "~<regex> <skill>": rings on what is written, in any file. Every matching line adds its skill.
+~LoggerMessage|ILogger<|\.Log(Error|Warning|Information|Debug|Critical|Trace)\( logging
