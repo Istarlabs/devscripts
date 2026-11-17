@@ -16,6 +16,8 @@ and asking for permission again on every unique command line.
     python3 Scripts/cpp.py warnings --flag -Wshadow  every occurrence of one flag
     python3 Scripts/cpp.py test [NAME] [--details]   ctest, with the failing output
     python3 Scripts/cpp.py format [--check]          clang-format over the sources
+    python3 Scripts/cpp.py tidy [PATH ...]           clang-tidy over the sources, findings by check
+    python3 Scripts/cpp.py tidy --check NAME         every finding of one check
     python3 Scripts/cpp.py run -- --help             the built binary, arguments passed through
     python3 Scripts/cpp.py install                   cmake --install, and a desktop entry too when
                                                      [cpp.service_menu] names one
@@ -465,6 +467,109 @@ def binary_path():
             return candidate
 
     return None
+
+
+# clang-tidy's own diagnostics: `path:line:column: warning: text [check-name]`, the check last in brackets.
+TIDY_CHECK = re.compile(r"\s*\[(?P<check>[\w.-]+?)(?:,-warnings-as-errors)?\]\s*$")
+TIDY_NOLINT = re.compile(r"Suppressed \d+ warnings \(.*?(?P<nolint>\d+) NOLINT\)")
+
+
+def tidy_findings(output, build_dir):
+    """run-clang-tidy's output as sorted (path, line, check, text) findings, each once, and the NOLINT count.
+
+    A finding in a header is printed by every file that includes it; the set keeps it once. A header's
+    NOLINT is counted the same way, so the count says how often one was honoured, which is enough to
+    tell that they are there.
+    """
+    findings = set()
+
+    for line in output.splitlines():
+        match = DIAGNOSTIC.match(line)
+
+        if not match:
+            continue
+
+        check = TIDY_CHECK.search(match["text"])
+        path = match["path"] if os.path.isabs(match["path"]) else os.path.join(build_dir, match["path"])
+        findings.add((os.path.normpath(path), int(match["line"]), check["check"] if check else match["level"],
+                      TIDY_CHECK.sub("", match["text"]).strip()))
+
+    return sorted(findings), sum(int(match["nolint"]) for match in TIDY_NOLINT.finditer(output))
+
+
+def command_tidy(arguments):
+    """clang-tidy over the project's own sources, with the findings once each, by check.
+
+    It builds first: clang-tidy reads compile_commands.json, and a file that includes a generated
+    header (moc, kconfig_compiler, ui) cannot be checked before that header exists. Only the
+    translation units are passed; headers are checked through them, as far as .clang-tidy's
+    HeaderFilterRegex lets them in - which is why a finding in a header is counted once, not once
+    per file that includes it.
+    """
+    runner = shutil.which("run-clang-tidy")
+
+    if not os.path.isfile(os.path.join(REPO, ".clang-tidy")) or not runner:
+        print("no .clang-tidy, or run-clang-tidy is not installed (clang-tools-extra) - nothing to do")
+
+        return 1
+
+    print(f"Building ({BUILD_TYPE}) for the compile database ...")
+    errors, _ = build()
+
+    if errors:
+        print(f"\nBUILD FAILED - {len(errors)} error(s):\n")
+        show(errors)
+
+        return 1
+
+    units = [path for path in source_files() if path.endswith((".cpp", ".cc", ".cxx"))]
+
+    if arguments.paths:
+        wanted = [os.path.normpath(path) for path in arguments.paths]
+        units = [path for path in units if any(path == want or path.startswith(want.rstrip("/") + "/")
+                                               for want in wanted)]
+
+    if not units:
+        print("no source files to check" + (" under those paths" if arguments.paths else ""))
+
+        return 1
+
+    print(f"clang-tidy over {len(units)} file(s) ...")
+    # run-clang-tidy takes regular expressions over the compile database's paths, so each file is
+    # one anchored, escaped pattern.
+    patterns = [re.escape(os.path.join(REPO, path)) + "$" for path in units]
+    # Not -quiet: it drops the "Suppressed ... NOLINT" lines the count below is read from.
+    completed = run([runner, "-p", BUILD_DIR, "-j", str(os.cpu_count() or 4), *patterns])
+    output = completed.stdout + completed.stderr
+    findings, nolint = tidy_findings(output, BUILD_DIR)
+
+    if arguments.check:
+        matching = [finding for finding in findings if finding[2] == arguments.check]
+        print(f"\n{arguments.check}: {len(matching)} finding(s)\n")
+        show(matching, limit=len(matching))
+
+        return 1 if matching else 0
+
+    if not findings:
+        if completed.returncode != 0:
+            print(output.strip()[-2000:])
+
+            return completed.returncode
+
+        print(f"  clean ({nolint} NOLINT honoured)")
+
+        return 0
+
+    print(f"\n{len(findings)} finding(s), by check ({nolint} NOLINT honoured):\n")
+
+    for check, count in collections.Counter(finding[2] for finding in findings).most_common():
+        print(f"  {check:<60} {count:>4}")
+
+    print()
+    show(findings, limit=arguments.limit)
+    print("\n  'tidy --check NAME' lists every finding of one check")
+
+    return 1
 
 
 def command_run(arguments):
@@ -961,6 +1066,12 @@ def main():
     format_command.add_argument("--check", action="store_true",
                                 help="Report what it would change, change nothing")
     format_command.set_defaults(handler=command_format)
+
+    tidy = subparsers.add_parser("tidy", help="clang-tidy over the project's own sources, findings by check")
+    tidy.add_argument("paths", nargs="*", help="Only these files or directories, repository-relative")
+    tidy.add_argument("--check", help="List every finding of one check, e.g. bugprone-signed-bitwise")
+    tidy.add_argument("--limit", type=int, default=40, help="How many findings to list (default 40)")
+    tidy.set_defaults(handler=command_tidy)
 
     run_command = subparsers.add_parser("run", help="Build, then run the binary with the arguments passed through")
     run_command.add_argument("--debug", action="store_true", help="Build Debug first")

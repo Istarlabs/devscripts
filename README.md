@@ -603,6 +603,13 @@ and nothing else, so `rust.py install` compiles each `.po` into
 recompiles nothing prints no warnings, and "0 warnings" out of a build that did no work is the kind
 of green that hides a red. `--incremental` opts out where the honest answer costs too much.
 
+**`cpp.py tidy` is not part of `verify`.** clang-tidy takes a few seconds per file and a project that
+was never run through it starts with dozens of findings, so it is asked for, not imposed. It builds
+first (clang-tidy needs the compile database and the generated moc/kcfg headers), checks only the
+project's own translation units, counts a header's finding once rather than once per includer, and
+says how many `NOLINT` it honoured — a wrong file pattern and a clean tree both print nothing from
+`run-clang-tidy` itself, and only the counts tell them apart.
+
 **Never `sys.path.insert(0, SCRIPTS)` to reach a sibling script.** In a project that uses this
 checkout `Scripts/` holds *shims*, so that import runs one as `__main__` against the current
 command's argv — `rust.py verify` died on `spdx.py: invalid choice: 'verify'` exactly that way. The
