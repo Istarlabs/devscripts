@@ -351,6 +351,17 @@ python3 Scripts/repo.py land                  # master fast-forwards to this bra
 It refuses a dirty tree, a branch with nothing master lacks, and a branch master has moved past (`sync`
 first). Fast-forward only: nothing is rewritten and nothing is merged behind your back.
 
+## Before a repository goes public
+
+```bash
+python3 Scripts/repo.py leaks                 # gitleaks over the whole history and the working files
+```
+
+Both places, because a secret deleted from the tree is still readable in the history. The working files
+are the ones a commit would take - tracked and new, ignored ones left out - so `build/`, `target/` and
+`obj/` are not read. Secrets are redacted; one line per finding, exit 1 when there is one. Needs
+`gitleaks` (`sudo dnf install gitleaks`).
+
 ## CI
 
 `repo.py ci` is how a run is looked at — not three hand-built `gh` lines:
