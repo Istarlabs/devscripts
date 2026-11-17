@@ -362,9 +362,6 @@ def restart(expected_tag):
 
 
 def command_deploy(arguments):
-    if not os.path.isdir(os.path.join(CONTEXT, "Istarnova")):
-        refuse(f"no Istarnova checkout next to this repository ({CONTEXT}) — the image cannot build")
-
     tag = build_tag()
     build(tag)
 
