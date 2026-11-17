@@ -20,7 +20,7 @@
 | --- | --- |
 | Build, tests, format, licence lines | `python3 Scripts/cpp.py verify [--quick]` |
 | Configure and build | `python3 Scripts/cpp.py build [--debug] [--clean]` |
-| Warnings by flag, or every hit of one flag | `python3 Scripts/cpp.py warnings [--flag -Wshadow]` |
+| Warnings by flag, or every hit of one flag | `python3 Scripts/cpp.py warnings [--flag=-Wshadow]` |
 | Tests, with the failing output | `python3 Scripts/cpp.py test [NAME] [--details]` |
 | Format | `python3 Scripts/cpp.py format [--check]` |
 | Run the built binary | `python3 Scripts/cpp.py run -- ARGS` |
