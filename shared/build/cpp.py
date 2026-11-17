@@ -13,7 +13,7 @@ and asking for permission again on every unique command line.
     python3 Scripts/cpp.py verify --against master   diff base for "warnings on changed lines"
     python3 Scripts/cpp.py build [--debug] [--clean] configure and build
     python3 Scripts/cpp.py warnings                  warnings by flag, most frequent first
-    python3 Scripts/cpp.py warnings --flag -Wshadow  every occurrence of one flag
+    python3 Scripts/cpp.py warnings --flag=-Wshadow  every occurrence of one flag (the = is needed)
     python3 Scripts/cpp.py test [NAME] [--details]   ctest, with the failing output
     python3 Scripts/cpp.py format [--check]          clang-format over the sources
     python3 Scripts/cpp.py tidy [PATH ...]           clang-tidy over the sources, findings by check
@@ -1053,7 +1053,7 @@ def main():
     build_command.set_defaults(handler=command_build)
 
     warnings = subparsers.add_parser("warnings", help="Warnings by flag, most frequent first")
-    warnings.add_argument("--flag", help="List every occurrence of one flag, e.g. -Wunused-parameter")
+    warnings.add_argument("--flag", help="List every occurrence of one flag: --flag=-Wunused-parameter (with the =, or argparse reads -W... as an option of its own)")
     warnings.add_argument("--incremental", action="store_true", help="Do not build clean first")
     warnings.set_defaults(handler=command_warnings)
 

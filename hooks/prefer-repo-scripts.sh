@@ -194,7 +194,7 @@ fi
 if matches "${start}(cmake|ctest)\b"; then
     deny "Scripts/cpp.py owns the build: 'verify' configures, builds clean, runs ctest, compares \
 against clang-format and checks the licence lines, and reports warnings on the lines you changed. \
-'build', 'test [NAME]', 'warnings [--flag -Wx]', 'format', 'run -- ARGS', 'install' and 'toolchain' \
+'build', 'test [NAME]', 'warnings [--flag=-Wx]', 'format', 'run -- ARGS', 'install' and 'toolchain' \
 cover the rest, and each one reads the build directory, the generator and the install prefix out of \
 Scripts/project.toml instead of having them retyped. See 'python3 Scripts/cpp.py --help'."
 fi
