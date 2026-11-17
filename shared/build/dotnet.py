@@ -35,6 +35,8 @@ command line asked for permission again. Fixed paths, forced-English output, one
     python3 Scripts/dotnet.py android devices                 connect the configured device, list what adb sees
     python3 Scripts/dotnet.py android run                     start the installed app
     python3 Scripts/dotnet.py android dependencies            install the Android SDK platform the target framework needs
+    python3 Scripts/dotnet.py android release [--ref TAG]     the release APK of one commit, built in [android.release]'s container
+    python3 Scripts/dotnet.py android release --check         ... twice, failing unless both unsigned APKs are identical
     python3 Scripts/dotnet.py ef add AddSomething     migration, both projects filled in
     python3 Scripts/dotnet.py ef update               apply pending migrations to the dev database
     python3 Scripts/dotnet.py ef remove | list | script
@@ -43,11 +45,14 @@ Exit code is non-zero when a build or a test fails, so it can gate a commit.
 """
 import argparse
 import collections
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -112,6 +117,9 @@ WARNING = re.compile(
 PROJECT_WARNING = re.compile(
     r"^(?!.*\(\d+,\d+\)).*?: warning (?P<code>[A-Z]+\d+): (?P<text>[^\[]+)(?:\[(?P<project>[^\]]+)\])?",
     re.MULTILINE)
+# Any warning at all, by code and text: the trimmer's own ("ILLink : Trim analysis warning IL2026: ...") match
+# neither pattern above, and in a trimmed Android build those are the ones that say what breaks at run time.
+ANY_WARNING = re.compile(r"\bwarning (?P<code>[A-Z]+\d+): (?P<text>[^\[\r\n]*)")
 ERROR = re.compile(
     rf"^{NODE_ID}(?P<file>[^(\r\n]+)\((?P<line>\d+),\d+\): error (?P<code>[A-Z]+\d+): (?P<text>[^\[\r\n]*)",
     re.MULTILINE)
@@ -1025,6 +1033,9 @@ def command_android(arguments):
     if arguments.action == "dependencies":
         return install_android_dependencies()
 
+    if arguments.action == "release":
+        return android_release(arguments.ref, arguments.check)
+
     configuration = "Release" if arguments.release else "Debug"
     apk = None if arguments.no_build else build_apk(configuration)
 
@@ -1059,6 +1070,111 @@ def command_android(arguments):
     print(f"  installed {android.application_id()}")
 
     return 0
+
+
+def android_release(ref, check):
+    """The release APK of one commit, built in the container of [android.release] from a clean clone of it.
+
+    --check builds it a second time, in a second clone with an empty NuGet cache, and fails unless both unsigned
+    APKs are the same bytes: the proof that anyone with the commit and the Containerfile gets this APK.
+    """
+    # Its lines come between podman's and the build's, which write straight to the terminal.
+    sys.stdout.reconfigure(line_buffering=True)
+    settings = android.release_settings()
+    commit = subprocess.run(["git", "-C", REPO, "rev-parse", "--verify", f"{ref}^{{commit}}"],
+                            capture_output=True, text=True)
+
+    if commit.returncode != 0:
+        sys.stderr.write(f"refused: {ref} is not a commit\n")
+
+        return 2
+
+    commit = commit.stdout.strip()
+    work = Path(tempfile.mkdtemp(prefix="android-release-"))
+    print(f"Release APK of {commit[:12]} ({ref}), working in {work}")
+
+    try:
+        first = build_release_in_container(settings, commit, work / "first", settings["nuget_volume"],
+                                           sign=True)
+
+        if first is None:
+            return 1
+
+        if check:
+            fresh_volume = f"{settings['nuget_volume']}-check"
+            subprocess.run(["podman", "volume", "rm", "-f", fresh_volume], capture_output=True)
+            second = build_release_in_container(settings, commit, work / "second", fresh_volume, sign=False)
+            subprocess.run(["podman", "volume", "rm", "-f", fresh_volume], capture_output=True)
+
+            if second is None:
+                return 1
+
+            if unsigned_hash(first) != unsigned_hash(second):
+                print(f"\nNOT REPRODUCIBLE: the two unsigned APKs differ - {first} and {second} are kept "
+                      "for diffoscope")
+                work = None
+
+                return 1
+
+            print(f"\nreproducible: both builds gave {unsigned_hash(first)}")
+
+        target = android.app_project().parent / "bin" / "Release" / "reproducible" / commit[:12]
+        target.mkdir(parents=True, exist_ok=True)
+
+        for produced in first.iterdir():
+            shutil.copy2(produced, target / produced.name)
+
+        print(f"\n{(target / 'SHA256SUMS').read_text().strip()}\n  in {os.path.relpath(target, REPO)}")
+
+        return 0
+    finally:
+        if work is not None:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def unsigned_hash(out):
+    return hashlib.sha256((out / "companion-unsigned.apk").read_bytes()).hexdigest()
+
+
+def build_release_in_container(settings, commit, directory, nuget_volume, sign):
+    """Clone, build the toolchain image from that clone's Containerfile, run its build script; the output folder, or None."""
+    source = directory / "src"
+    out = directory / "out"
+    out.mkdir(parents=True)
+
+    for command in (["git", "clone", "--quiet", "--no-hardlinks", REPO, str(source)],
+                    ["git", "-C", str(source), "checkout", "--quiet", "--detach", commit]):
+        if subprocess.run(command).returncode != 0:
+            return None
+
+    image = settings["image"]
+    print(f"\nToolchain image {image} from {settings['containerfile']} ...")
+
+    if subprocess.run(["podman", "build", "-q", "-t", image, "-f", str(source / settings["containerfile"]),
+                       str(source)], stdout=subprocess.DEVNULL).returncode != 0:
+        return None
+
+    # label=disable instead of :Z, which would relabel the signing key's folder on the host for good.
+    command = ["podman", "run", "--rm", "--security-opt", "label=disable",
+               "-v", f"{source}:/src", "-v", f"{out}:/out", "-v", f"{nuget_volume}:/root/.nuget/packages"]
+    script = ["python3", f"/src/{settings['script']}", "--out", "/out"]
+
+    if sign:
+        signing = android.signing_files()
+
+        for name, path in signing["files"].items():
+            command += ["-v", f"{path}:/signing/{name}:ro"]
+
+        script += ["--keystore", "/signing/keystore", "--alias", signing["alias"],
+                   "--store-password-file", "/signing/store-password",
+                   "--key-password-file", "/signing/key-password"]
+
+    print(f"Building {commit[:12]} in the container{' (signed)' if sign else ''} ...")
+
+    if subprocess.run([*command, image, *script]).returncode != 0:
+        return None
+
+    return out
 
 
 def install_android_dependencies():
@@ -1119,6 +1235,14 @@ def build_apk(configuration):
             print(f"  {os.path.relpath(path, REPO)}:{line}  {code}  {text}")
 
         return None
+
+    warnings = sorted({(m["code"], m["text"].strip()) for m in ANY_WARNING.finditer(output)})
+
+    if warnings:
+        print(f"\n{len(warnings)} distinct warning(s):")
+
+        for code, text in warnings[:40]:
+            print(f"  {code}  {text}")
 
     apk = android.newest_apk(configuration)
 
@@ -1600,9 +1724,13 @@ def main():
     script.set_defaults(handler=command_script)
 
     android_parser = subparsers.add_parser("android", help="MAUI app: signed .apk, adb install, start")
-    android_parser.add_argument("action", choices=["build", "install", "devices", "run", "dependencies"])
+    android_parser.add_argument("action", choices=["build", "install", "devices", "run", "dependencies", "release"])
     android_parser.add_argument("--release", action="store_true", help="Release configuration, signed with [android.signing]")
     android_parser.add_argument("--no-build", action="store_true", help="install: use the .apk already built")
+    android_parser.add_argument("--ref", default="HEAD",
+                                help="release: the commit or tag to build, from a clean clone (default HEAD)")
+    android_parser.add_argument("--check", action="store_true",
+                                help="release: build twice and fail unless the unsigned APKs are identical")
     android_parser.set_defaults(handler=command_android)
 
     subparsers.add_parser("projects", help="Projects in the solution with their target framework") \
