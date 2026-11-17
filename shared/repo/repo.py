@@ -31,6 +31,7 @@ Everything below reads --porcelain or --json and never the human-readable text.
     python3 Scripts/repo.py blame FILE --lines 24,48  who wrote it, and what that commit was about
     python3 Scripts/repo.py push                      push the current branch, setting upstream
     python3 Scripts/repo.py move OLD NEW [OLD NEW]    git mv in pairs, all of them or none
+    python3 Scripts/repo.py leaks                     gitleaks over the history and the working files, before going public
 
     python3 Scripts/repo.py issues                    open issues, one line each
     python3 Scripts/repo.py issues --state closed --label bug
@@ -956,6 +957,58 @@ def command_ignored(arguments):
 
         source, pattern = line.split("\t")[0].rsplit(":", 1)[0], line.split(":")[2].split("\t")[0]
         print(f"{path}: ignored by {source} rule '{pattern}'")
+
+
+def gitleaks_findings(mode, target, scratch):
+    """gitleaks' findings over one target, read from its JSON report rather than its log lines."""
+    report = os.path.join(scratch, f"{mode}.json")
+    run(["gitleaks", mode, target, "--redact", "--no-banner", "--log-level", "warn", "--exit-code", "0",
+         "--report-format", "json", "--report-path", report])
+
+    with open(report, encoding="utf-8") as handle:
+        return json.load(handle) or []
+
+
+def command_leaks(_arguments):
+    """Scan for secrets with gitleaks before a repository goes public, or whenever in doubt.
+
+    Two scans, because a secret can sit in either place: the whole history, where a value deleted
+    since is still readable, and the files a commit would take - tracked and new, ignored ones left
+    out. `gitleaks dir .` alone reads build/, target/ and obj/ as well, megabytes of output that
+    nobody publishes, so the working files are copied aside and scanned there. Secrets are redacted.
+    """
+    if shutil.which("gitleaks") is None:
+        refuse("gitleaks is missing: 'sudo dnf install gitleaks', or a release from "
+               "https://github.com/gitleaks/gitleaks")
+
+    commits = int(out(["git", "rev-list", "--count", "--all"]) or 0)
+    files = working_files()
+    lines = []
+
+    with tempfile.TemporaryDirectory(prefix="leaks-") as scratch:
+        if commits:
+            for finding in gitleaks_findings("git", REPO, scratch):
+                lines.append(f"{finding['Commit'][:10]}  {finding['File']}:{finding['StartLine']}  "
+                             f"{finding['RuleID']}")
+
+        tree = os.path.join(scratch, "tree")
+
+        for name in files:
+            os.makedirs(os.path.dirname(os.path.join(tree, name)), exist_ok=True)
+            shutil.copy2(os.path.join(REPO, name), os.path.join(tree, name), follow_symlinks=False)
+
+        if files:
+            for finding in gitleaks_findings("dir", tree, scratch):
+                name = os.path.relpath(finding["File"], tree)
+                lines.append(f"{'working':10}  {name}:{finding['StartLine']}  {finding['RuleID']}")
+
+    if lines:
+        print("\n".join(lines))
+        print(f"\n{len(lines)} finding(s). A real secret is rotated first, then removed - from the history "
+              "too, if it was ever committed. A false positive goes into .gitleaksignore.")
+        sys.exit(1)
+
+    print(f"no leaks: {commits} commit(s) of history, {len(files)} working file(s)")
 
 
 # --- issues ----------------------------------------------------------------------------------
@@ -1929,6 +1982,9 @@ def main():
     restore.add_argument("--source", metavar="REV",
                          help="Take the files from this revision instead of HEAD, into the working tree only")
 
+    subparsers.add_parser(
+        "leaks", help="gitleaks over the history and the working files; exit 1 on a finding")
+
     untrack = subparsers.add_parser(
         "untrack", help="Stop tracking committed paths, without deleting them from disk")
     untrack.add_argument("paths", nargs="+", help="Files or directories, repository-relative")
@@ -2072,6 +2128,7 @@ def main():
         "log": command_log, "blame": command_blame, "uncommit": command_uncommit,
         "push": command_push, "move": command_move,
         "untrack": command_untrack, "restore": command_restore, "ignored": command_ignored,
+        "leaks": command_leaks,
         "issues": command_issues, "issue": command_issue, "digest": command_digest,
         "assign": command_assign,
         "issue-create": command_issue_create, "issue-edit": command_issue_edit,

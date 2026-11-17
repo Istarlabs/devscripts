@@ -13,6 +13,7 @@
 # Blocked:   gh issue list                  ->  python3 Scripts/repo.py issues
 #            git commit -m "..."            ->  python3 Scripts/repo.py commit
 #            git log --oneline              ->  python3 Scripts/repo.py log
+#            gitleaks dir . --redact        ->  python3 Scripts/repo.py leaks
 #            psql -c "select 1"             ->  python3 Scripts/db.py query
 #            rg -l "SomeSymbol"             ->  python3 Scripts/find.py SomeSymbol
 #            fd -e razor . Components       ->  python3 Scripts/find.py / the Glob tool
@@ -98,6 +99,12 @@ if matches "${start}git[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+|--no
     deny "Scripts/repo.py owns the history: 'python3 Scripts/repo.py log [PATH ...] [-n 20] \
 [--range master..HEAD]' prints one line per commit with no pager to remember. For who wrote a \
 passage and why, 'repo.py blame FILE --lines 24,48'."
+fi
+
+if matches "${start}gitleaks\b"; then
+    deny "Scripts/repo.py owns the secret scan: 'python3 Scripts/repo.py leaks' runs gitleaks over the whole \
+history and over the files a commit would take, ignored ones (build/, target/, obj/) left out, with the \
+secrets redacted and one line per finding. It exits 1 on a finding."
 fi
 
 if matches "${start}psql\b"; then
