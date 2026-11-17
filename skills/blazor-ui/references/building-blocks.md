@@ -1,7 +1,8 @@
 # The building blocks of Istarnova, and how they are used
 
-Source: `~/dev/projects/dotnet/Istarnova`. Applications reference it as source (`ProjectReference`), so a change there is
-in the application at once; read the code when a detail matters. Namespaces: `Istarnova.Blazor.FluentUI.*`, `Istarnova.Blazor.*`,
+Source: github.com/Istarlabs/Istarnova. Applications use its NuGet packages, one version for all of them (`IstarnovaVersion`
+in `Directory.Build.props`), so a change there reaches an application with the next release; read the code when a detail
+matters. Namespaces: `Istarnova.Blazor.FluentUI.*`, `Istarnova.Blazor.*`,
 `Istarnova.EfCore.*`, `Istarnova.AspNetCore.*`.
 
 ## Registering

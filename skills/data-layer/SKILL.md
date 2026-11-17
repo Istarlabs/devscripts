@@ -11,7 +11,7 @@ description: >
 # Data layer (entities, EF Core, repositories, DI)
 
 The base classes, the configuration helpers, the audit stamping and the repository contracts are **`Istarnova.EfCore`**
-(`~/dev/projects/dotnet/Istarnova/Istarnova.EfCore`). Do not write a second `BaseEntity`, a second `BaseEntityConfiguration`, a second repository
+(the NuGet package; source in `Istarnova.EfCore/` of github.com/Istarlabs/Istarnova). Do not write a second `BaseEntity`, a second `BaseEntityConfiguration`, a second repository
 interface or a second `RepositoryLogger`. What a project adds - which schemas it has, how it names a lookup, how it handles migrations - is in the
 appendix below.
 

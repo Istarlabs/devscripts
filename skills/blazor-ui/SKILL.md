@@ -13,7 +13,8 @@ description: >
 
 Blazor Server (interactive, long-lived circuits) on **FluentUI Blazor 5** (`Microsoft.FluentUI.AspNetCore.Components` plus `.Icons`).
 Three applications once carried their own copy of the grids, the page frame, the navigation and the circuit state; they live in
-**Istarnova** now (`~/dev/projects/dotnet/Istarnova`, referenced as source). **Look there before writing a component** - that is
+**Istarnova** now (the NuGet packages `Istarnova.Blazor`, `.Blazor.FluentUI`, `.EfCore`, `.AspNetCore`; source at
+github.com/Istarlabs/Istarnova). **Look there before writing a component** - that is
 the whole point of this skill, and the table below is the index.
 
 | Read | When |
@@ -56,7 +57,7 @@ for discovery only.**
 | - runnable examples | `examples/Demo` |
 | - icon sources | `src/Assets/FluentUI.Icons/Icons/{Regular,Filled,Light,Color}` |
 | **The installed package** (what the build really uses) | `~/.nuget/packages/microsoft.fluentui.aspnetcore.components/<version>/lib/net10.0/` - the `.dll` and its `.xml` |
-| **The Istarnova source** | `~/dev/projects/dotnet/Istarnova`, a clone of github.com/Istarlabs/Istarnova - `Istarnova.Blazor.FluentUI`, `Istarnova.Blazor`, `Istarnova.EfCore`, `Istarnova.AspNetCore` |
+| **The Istarnova source** | a clone of github.com/Istarlabs/Istarnova (here `~/dev/istarlabs/dotnet/Istarnova`) - `Istarnova.Blazor.FluentUI`, `Istarnova.Blazor`, `Istarnova.EfCore`, `Istarnova.AspNetCore` |
 
 The checkout is the *development* branch, so when it and the installed package could differ (a parameter that is not in the build),
 the package's `.xml` is the tie-break.
