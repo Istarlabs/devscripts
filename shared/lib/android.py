@@ -12,6 +12,12 @@ Scripts/project.toml, and the machine-bound parts can be overridden by an enviro
     # adb = "~/Android/Sdk/platform-tools/adb"      default: PATH, then the SDK in dotnet.build_properties
     # device = "192.168.1.50:37123"     adb over WLAN; {PREFIX}_ANDROID_DEVICE overrides
 
+    [android.release]                     `android release`: the APK built in a container, reproducibly
+    containerfile = "deploy/android/Containerfile"
+    script = "deploy/android/build.py"    runs inside it: --out DIR, optional --keystore/--alias/--*-password-file
+    # image = "org.some.app-build"        default: {application_id}-build
+    # nuget_volume = "org.some.app-nuget" default: {application_id}-nuget
+
     [android.signing]                     applied to --release only; the passwords stay in files
     keystore = "~/.config/some-signing/some.keystore"
     alias = "some"
@@ -158,6 +164,31 @@ def signing_properties():
     }
 
     return [f"-p:{key}={value}" for key, value in properties.items()]
+
+
+def release_settings():
+    """[android.release]: the Containerfile of the toolchain and the script that builds inside it."""
+    return {
+        "containerfile": project.require("android.release.containerfile"),
+        "script": project.require("android.release.script"),
+        "image": project.get("android.release.image") or f"{application_id()}-build",
+        "nuget_volume": project.get("android.release.nuget_volume") or f"{application_id()}-nuget",
+    }
+
+
+def signing_files():
+    """The signing files of [android.signing] by the name the container sees them under, plus the alias."""
+    files = {
+        "keystore": expand(project.env("ANDROID_KEYSTORE", project.require("android.signing.keystore"))),
+        "store-password": expand(project.require("android.signing.store_password_file")),
+        "key-password": expand(project.require("android.signing.key_password_file")),
+    }
+
+    for path in files.values():
+        if not os.path.isfile(path):
+            fail(f"signing file {path} does not exist")
+
+    return {"files": files, "alias": project.require("android.signing.alias")}
 
 
 def newest_apk(configuration, signed=True):
