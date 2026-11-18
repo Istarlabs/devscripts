@@ -11,7 +11,8 @@ machine's git and SDK are localized, so `grep`-ing for "nothing to commit" silen
 
 Everything below reads --porcelain or --json and never the human-readable text.
 
-    python3 Scripts/repo.py init [--description T]    a directory that is no repository yet: git init + a private GitHub repo
+    python3 Scripts/repo.py init [--description T]    a directory that is no repository yet: git init + a private GitHub repo + labels
+    python3 Scripts/repo.py labels                    the shared labels and the project's [[repo.labels]], on an existing repo
     python3 Scripts/repo.py status                    branch, upstream, staged/unstaged, ahead/behind
     python3 Scripts/repo.py diff [PATH ...]           what changed, not just which files
     python3 Scripts/repo.py diff --against master --stat
@@ -215,6 +216,10 @@ def command_init(arguments):
 
     print(f"initialised on {MAIN_BRANCH}, "
           f"{'public' if arguments.public else 'private'} repository {name} created: {out(['git', 'remote', 'get-url', 'origin'])}")
+
+    # The repository exists by now, so a label that fails is reported, not undone: `labels` repeats it.
+    if failed := create_labels():
+        print(f"labels not created: {', '.join(failed)} - `repo.py labels` tries again", file=sys.stderr)
 
 
 def command_status(_arguments):
@@ -1278,6 +1283,43 @@ def command_label(arguments):
     run(command, capture=False)
 
 
+# What every repository gets besides GitHub's own ten; a project adds its areas as [[repo.labels]] in project.toml.
+SHARED_LABELS = [
+    {"name": "dependencies", "color": "0366d6", "description": "Package and SDK updates"},
+    {"name": "epic", "color": "5319e7", "description": "Parent issue that tracks a group of issues"},
+    {"name": "parked", "color": "cfd3d7", "description": "Deliberately postponed"},
+    {"name": "ci", "color": "fbca04", "description": "Build, test and publish pipelines"},
+]
+
+
+def create_labels():
+    """Create (or update, `--force`) the shared labels and the project's own. Returns the names that failed."""
+    failed = []
+
+    for label in SHARED_LABELS + list(project.get("repo.labels", [])):
+        command = ["gh", "label", "create", label["name"], "--force"]
+
+        if label.get("color"):
+            command += ["--color", label["color"]]
+
+        if label.get("description"):
+            command += ["--description", label["description"]]
+
+        if run(command, check=False).returncode != 0:
+            failed.append(label["name"])
+
+    return failed
+
+
+def command_labels(_arguments):
+    failed = create_labels()
+
+    if failed:
+        refuse(f"could not create: {', '.join(failed)}")
+
+    print(f"{len(SHARED_LABELS) + len(project.get('repo.labels', []))} labels in place")
+
+
 # --- milestones ------------------------------------------------------------------------------
 
 MILESTONES = "repos/{owner}/{repo}/milestones"
@@ -1969,6 +2011,9 @@ def main():
     init.add_argument("--description", help="The one-line description shown on GitHub")
     init.add_argument("--public", action="store_true", help="Public instead of private")
 
+    subparsers.add_parser(
+        "labels", help="Create the shared labels and the project's [[repo.labels]] (init does it; this repeats it)")
+
     push = subparsers.add_parser("push", help="Push the current branch, setting upstream")
     push.add_argument("--allow-master", action="store_true")
 
@@ -2121,6 +2166,7 @@ def main():
     handlers = {
         "ci": command_ci,
         "init": command_init,
+    "labels": command_labels,
         "status": command_status, "diff": command_diff,
         "branch": command_branch, "branches": command_branches, "switch": command_switch, "land": command_land,
         "test-branch": command_test_branch, "sync": command_sync,
