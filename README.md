@@ -263,6 +263,13 @@ unit = "medialibrary"
 main_branch = "master"
 ci = true                  # false: no workflows; `repo.py ci` says so at once instead of polling for a run
 merge_strategy = "merge"   # what `repo.py pr-merge` uses without --strategy: merge | squash | rebase
+
+# The project's own labels, created by `repo.py init` and `repo.py labels` next to the shared ones
+# (dependencies, epic, parked, ci) - one block per label, the areas of this project.
+# [[repo.labels]]
+# name = "area:ui"
+# color = "d4c5f9"
+# description = "QML pages and the controller"
 ```
 
 `project.py` resolves it: the shim names the repository through `DEVSCRIPTS_PROJECT`, and a script
