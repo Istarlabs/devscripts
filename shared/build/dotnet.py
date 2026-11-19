@@ -304,35 +304,63 @@ def parse_testing_platform_summary(output):
             "total": int(counts["total"])}
 
 
-def run_tests(test_filter=None, detailed=False):
+TEST_LOG_KEPT = 20
+
+
+def test_log_folder():
+    return Path.home() / ".cache" / "devscripts" / "test-logs" / project.root.name
+
+
+def save_test_log(output):
+    """Keep the whole output of a test run, so a failure that does not come back can still be read.
+
+    A run that fails once and passes on the next is gone from the terminal by the time anyone asks
+    why. The logs live outside the repository (one folder per project), newest last in the name order.
+    """
+    folder = test_log_folder()
+    folder.mkdir(parents=True, exist_ok=True)
+
+    path = folder / f"{time.strftime('%Y%m%d-%H%M%S')}.log"
+    path.write_text(output, encoding="utf-8")
+
+    for old in sorted(folder.glob("*.log"))[:-TEST_LOG_KEPT]:
+        old.unlink()
+
+    return path
+
+
+def run_tests(test_filter=None, detailed=True):
+    """Run the tests with the output that names the assertion, and keep that output as a log.
+
+    `detailed` stays in the signature for the callers that pass it; the assertion of a failed test is
+    only written at this verbosity, and a failure nobody can read cannot be acted on.
+    """
     if uses_testing_platform():
         # Everything after the project is handed to the test application, which exits on an option
         # it does not know - `--nologo` made every run end in "Zero tests ran".
-        command = ["dotnet", "test", "--project", need(TEST_PROJECT, "dotnet.test_project"), "-v", "q"]
-
-        if detailed:
-            command += ["--output", "Detailed"]
+        command = ["dotnet", "test", "--project", need(TEST_PROJECT, "dotnet.test_project"), "-v", "q",
+                   "--output", "Detailed"]
 
         if test_filter:
             command += ["--filter", test_filter]
 
         completed = run(command)
         output = completed.stdout + completed.stderr
+        save_test_log(output)
 
         return parse_testing_platform_summary(output), output
 
-    command = ["dotnet", "test", need(TEST_PROJECT, "dotnet.test_project"), "-v", "q", "--nologo"]
-
     # The assertion lives in the console *logger*, not in the msbuild verbosity: -v n prints more
     # build noise and not one word more about the test that failed.
-    if detailed:
-        command += ["--logger", "console;verbosity=detailed"]
+    command = ["dotnet", "test", need(TEST_PROJECT, "dotnet.test_project"), "-v", "q", "--nologo",
+               "--logger", "console;verbosity=detailed"]
 
     if test_filter:
         command += ["--filter", test_filter]
 
     completed = run(command)
     output = completed.stdout + completed.stderr
+    save_test_log(output)
 
     # One line per test project: a solution or filter with several of them is the sum of its lines.
     summaries = re.findall(r"(?:Failed|Passed)!\s+-\s+Failed:\s+(\d+),\s+Passed:\s+(\d+),\s+Skipped:\s+(\d+),"
@@ -884,8 +912,7 @@ def command_warnings(arguments):
 def command_test(arguments):
     print("\nTesting ...")
 
-    detailed = getattr(arguments, "details", False)
-    result, output = run_tests(getattr(arguments, "filter", None), detailed)
+    result, output = run_tests(getattr(arguments, "filter", None))
 
     if result is None:
         print("  could not read the test summary:\n")
@@ -896,27 +923,22 @@ def command_test(arguments):
     print(f"  {result['passed']} passed, {result['failed']} failed, {result['skipped']} skipped")
 
     if result["failed"]:
-        print_failures(output, detailed)
+        print_failures(output)
+        print(f"\n  whole output: {sorted(test_log_folder().glob('*.log'))[-1]}")
 
     return 1 if result["failed"] else 0
 
 
-def print_failures(output, detailed=False):
-    """Name each failing test - "1 failed" alone cannot be acted on.
+def print_failures(output):
+    """Name each failing test and say what it asserted - "1 failed" alone cannot be acted on.
 
-    The [FAIL] line carries a theory's arguments, which is the part that says *which* case went. What
-    it does not carry is the assertion, because the runner writes that only from -v n upwards - so
-    "expected 9, actual 10" needs `test --details`, which asks for that verbosity.
+    The [FAIL] line carries a theory's arguments, which is the part that says *which* case went; the
+    assertion ("expected 9, actual 10") follows in the Error Message block.
     """
     failures = [line.strip() for line in output.splitlines() if "[FAIL]" in line]
 
     for failure in failures:
         print(f"\n  {failure}")
-
-    if not detailed:
-        print("\n  'test --details' repeats this with the assertion that failed")
-
-        return
 
     for block in re.findall(r"^\s*Error Message:\s*\n(.*?)(?=^\s*Stack Trace:)", output,
                             re.MULTILINE | re.DOTALL):
