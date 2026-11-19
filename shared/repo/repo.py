@@ -13,6 +13,7 @@ Everything below reads --porcelain or --json and never the human-readable text.
 
     python3 Scripts/repo.py init [--description T]    a directory that is no repository yet: git init + a private GitHub repo + labels
     python3 Scripts/repo.py labels                    the shared labels and the project's [[repo.labels]], on an existing repo
+    python3 Scripts/repo.py topics [--add T] [--remove T] [--repo OWNER/NAME]   the topics of the GitHub repository
     python3 Scripts/repo.py status                    branch, upstream, staged/unstaged, ahead/behind
     python3 Scripts/repo.py diff [PATH ...]           what changed, not just which files
     python3 Scripts/repo.py diff --against master --stat
@@ -1320,6 +1321,31 @@ def command_labels(_arguments):
     print(f"{len(SHARED_LABELS) + len(project.get('repo.labels', []))} labels in place")
 
 
+def command_topics(arguments):
+    """List the topics of the repository, after adding or removing the ones asked for.
+
+    `--repo` names the repository where the checkout has more than one remote and `gh` would have to guess.
+    """
+    if arguments.add or arguments.remove:
+        command = ["gh", "repo", "edit", *([arguments.repo] if arguments.repo else [])]
+
+        for topic in arguments.add:
+            command += ["--add-topic", topic]
+
+        for topic in arguments.remove:
+            command += ["--remove-topic", topic]
+
+        if run(command, check=False).returncode != 0:
+            refuse("could not change the topics")
+
+    view = json.loads(out(["gh", "repo", "view", *([arguments.repo] if arguments.repo else []), "--json",
+                           "nameWithOwner,repositoryTopics"]))
+    # gh has written the topic as {"name": ...} and as {"topic": {"name": ...}}.
+    names = sorted(item.get("name") or item["topic"]["name"] for item in view["repositoryTopics"] or [])
+
+    print(f"{view['nameWithOwner']}: {', '.join(names) if names else '(no topics)'}")
+
+
 # --- milestones ------------------------------------------------------------------------------
 
 MILESTONES = "repos/{owner}/{repo}/milestones"
@@ -2014,6 +2040,11 @@ def main():
     subparsers.add_parser(
         "labels", help="Create the shared labels and the project's [[repo.labels]] (init does it; this repeats it)")
 
+    topics = subparsers.add_parser("topics", help="Show the topics of the GitHub repository, after changing them")
+    topics.add_argument("--add", action="append", default=[], metavar="TOPIC", help="Add a topic (repeatable)")
+    topics.add_argument("--remove", action="append", default=[], metavar="TOPIC", help="Remove a topic (repeatable)")
+    topics.add_argument("--repo", metavar="OWNER/NAME", help="The repository; default: the one gh picks for the checkout")
+
     push = subparsers.add_parser("push", help="Push the current branch, setting upstream")
     push.add_argument("--allow-master", action="store_true")
 
@@ -2167,6 +2198,7 @@ def main():
         "ci": command_ci,
         "init": command_init,
     "labels": command_labels,
+    "topics": command_topics,
         "status": command_status, "diff": command_diff,
         "branch": command_branch, "branches": command_branches, "switch": command_switch, "land": command_land,
         "test-branch": command_test_branch, "sync": command_sync,

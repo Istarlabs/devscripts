@@ -31,6 +31,21 @@ the hooks, skills and guideline blocks are for those who use it.
 
 A script that misses a tool or a config value refuses and names what is missing; it does not guess.
 
+### Platforms
+
+Linux is the target, and Fedora is the only system it is run on. The core is plain Python with the standard library
+(`dotnet.py`, `repo.py`, `find.py`, `db.py`, `translations.py`, `gen_resx.py`, `spdx.py` and their kind) and has no reason
+not to run on macOS; it has not been tried. What needs Linux:
+
+- `system.py` (systemd: `journalctl`, `systemctl`), and the deploy and server scripts, which expect Podman and Quadlet
+  units
+- the packaging scripts (`rpm.py`, `godot.py desktop`, parts of `cpp.py`), which write RPMs, `.desktop` files and Unix
+  file modes
+- the Claude Code hooks, which are bash scripts; on Windows they need Git Bash or WSL
+- the caches, which live in `~/.cache`
+
+On Windows, use WSL. Nothing here has been run on macOS or Windows, so treat both as untested.
+
 ## Quick start
 
 ```bash
