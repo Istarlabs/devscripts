@@ -940,7 +940,9 @@ def print_failures(output):
     for failure in failures:
         print(f"\n  {failure}")
 
-    for block in re.findall(r"^\s*Error Message:\s*\n(.*?)(?=^\s*Stack Trace:)", output,
+    # Only the block right after a "Failed" line: a skipped test has an Error Message too, with no stack trace, and a
+    # pattern that starts at any Error Message would run on from it into the next failure.
+    for block in re.findall(r"^\s*Failed \S[^\n]*\n\s*Error Message:\s*\n(.*?)(?=^\s*Stack Trace:)", output,
                             re.MULTILINE | re.DOTALL):
         print("".join(f"    {line.strip()}\n" for line in block.splitlines() if line.strip()), end="")
 
