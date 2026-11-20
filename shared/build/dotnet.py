@@ -19,6 +19,7 @@ command line asked for permission again. Fixed paths, forced-English output, one
     python3 Scripts/dotnet.py packages --outdated     available updates
     python3 Scripts/dotnet.py packages --project Api  one project instead of the solution
     python3 Scripts/dotnet.py packages --versions Microsoft.OpenApi   versions on nuget.org
+    python3 Scripts/dotnet.py packages --set Pkg.A=1.2.0 Pkg.B=3.0.1   set versions in every project file
     python3 Scripts/dotnet.py projects                projects in the solution, with target framework
     python3 Scripts/dotnet.py sdk                     SDK, runtimes and what global.json pins
     python3 Scripts/dotnet.py script --list           the single-file C# scripts in Scripts/
@@ -947,7 +948,58 @@ def print_failures(output):
         print("".join(f"    {line.strip()}\n" for line in block.splitlines() if line.strip()), end="")
 
 
+def set_package_versions(assignments):
+    """Set `Version` of each `ID=VERSION` in every project and props file of the repository.
+
+    A package that no file references is an error, not a skip: a typo in the id would otherwise look like
+    an upgrade that went through.
+    """
+    wanted = {}
+
+    for assignment in assignments:
+        identifier, separator, version = assignment.partition("=")
+
+        if not separator or not identifier or not version:
+            print(f"Not ID=VERSION: {assignment}")
+
+            return 2
+
+        wanted[identifier] = version
+
+    files = [path for pattern in ("*.csproj", "*.props", "*.targets") for path in Path(REPO).rglob(pattern)
+             if not {"bin", "obj", "node_modules", ".git"} & set(path.parts)]
+    touched = collections.defaultdict(list)
+
+    for path in sorted(files):
+        text = path.read_text(encoding="utf-8-sig")
+        original = text
+
+        for identifier, version in wanted.items():
+            pattern = (r'(<Package(?:Reference|Version)\s+Include="' + re.escape(identifier)
+                       + r'"[^>]*?\bVersion=")([^"]*)(")')
+            text, count = re.subn(pattern, lambda found: found[1] + version + found[3], text)
+
+            if count:
+                touched[identifier].append(path.relative_to(REPO))
+
+        if text != original:
+            path.write_text(text, encoding="utf-8")
+
+    for identifier, version in wanted.items():
+        if identifier not in touched:
+            print(f"{identifier}: referenced nowhere")
+
+            return 1
+
+        print(f"{identifier} -> {version}: {len(touched[identifier])} file(s)")
+
+    return 0
+
+
 def command_packages(arguments):
+    if arguments.set:
+        return set_package_versions(arguments.set)
+
     if arguments.versions:
         # Which versions exist on nuget.org - needed to pin a patched one over a vulnerable transitive.
         completed = run(["dotnet", "package", "search", arguments.versions,
@@ -1727,6 +1779,8 @@ def main():
     packages.add_argument("--project", help="One project instead of the solution (fragment is enough)")
     packages.add_argument("--versions", metavar="PACKAGE_ID",
                           help="Versions available on nuget.org for one package")
+    packages.add_argument("--set", metavar="ID=VERSION", nargs="+",
+                          help="Set the version of packages in every project and props file")
     packages.set_defaults(handler=command_packages)
 
     ef = subparsers.add_parser("ef", help="EF Core migrations and database update")
