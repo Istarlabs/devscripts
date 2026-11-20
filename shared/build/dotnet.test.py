@@ -106,6 +106,51 @@ schema_diff = ("+CREATE SCHEMA IF NOT EXISTS nutrition;\n"
 assert dotnet.new_schemas_in(schema_diff) == ["nutrition", "audit"], dotnet.new_schemas_in(schema_diff)
 assert dotnet.new_schemas_in("") == []
 
+# `packages --set` rewrites the version of exactly the named package, in every project and props file, and
+# leaves build output alone. A package id that is the start of another one (EntityFrameworkCore, ...Design) is a
+# different package, and an id nothing references is an error, not a silent skip.
+with tempfile.TemporaryDirectory() as directory:
+    dotnet.REPO = directory
+
+    def project_file(name, text):
+        full = os.path.join(directory, name)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+
+        with open(full, "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+        return full
+
+    web = project_file("Web/Web.csproj",
+                       '<Project><ItemGroup>\n'
+                       '<PackageReference Include="Microsoft.EntityFrameworkCore" Version="11.0.0-rc.3" />\n'
+                       '<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="11.0.0-rc.3">\n'
+                       '<PrivateAssets>all</PrivateAssets></PackageReference>\n'
+                       '</ItemGroup></Project>\n')
+    props = project_file("Directory.Packages.props",
+                         '<Project><ItemGroup>'
+                         '<PackageVersion Include="Microsoft.EntityFrameworkCore" Version="11.0.0-rc.3"/>'
+                         '</ItemGroup></Project>\n')
+    built = project_file("Web/obj/Web.csproj",
+                         '<Project><PackageReference Include="Microsoft.EntityFrameworkCore" Version="11.0.0-rc.3"/></Project>\n')
+
+    assert dotnet.set_package_versions(["Microsoft.EntityFrameworkCore=11.0.0"]) == 0
+
+    with open(web, encoding="utf-8") as handle:
+        text = handle.read()
+
+    assert 'Include="Microsoft.EntityFrameworkCore" Version="11.0.0"' in text, text
+    assert 'Include="Microsoft.EntityFrameworkCore.Design" Version="11.0.0-rc.3"' in text, text
+
+    with open(props, encoding="utf-8") as handle:
+        assert 'Version="11.0.0"/>' in handle.read()
+
+    with open(built, encoding="utf-8") as handle:
+        assert "11.0.0-rc.3" in handle.read(), "obj/ is not touched"
+
+    assert dotnet.set_package_versions(["Nothing.Like.This=1.0.0"]) == 1
+    assert dotnet.set_package_versions(["NoVersion"]) == 2
+
 # A raw FluentDataGrid is counted by its opening tag; the localized grid, a row of a grid, build output and code-behind
 # are not. bin/ and obj/ hold a second copy of everything.
 with tempfile.TemporaryDirectory() as directory:
