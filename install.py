@@ -252,9 +252,16 @@ install_root = "~/.local"
 # generator = "Ninja"
 # configure_args = []
 # binary_path = "bin/{lower}"
+# A reader of files from outside: `verify` also runs the tests under ASan and UBSan (a second build).
+# sanitize = true
+# sanitize_suppressions = "Scripts/lsan.supp"
 # [cpp.service_menu]
 # source = "dolphin/{lower}.desktop"
 # target = "~/.local/share/kio/servicemenus/{lower}.desktop"
+# [cpp.fuzz]
+# targets = ["fuzz_{lower}"]
+# option = "BUILD_FUZZING"
+# seeds_dir = "fuzz/seeds"
 ''',
 }
 

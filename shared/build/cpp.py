@@ -18,6 +18,11 @@ and asking for permission again on every unique command line.
     python3 Scripts/cpp.py format [--check]          clang-format over the sources
     python3 Scripts/cpp.py tidy [PATH ...]           clang-tidy over the sources, findings by check
     python3 Scripts/cpp.py tidy --check NAME         every finding of one check
+    python3 Scripts/cpp.py sanitize [NAME]           the tests under ASan, UBSan and LeakSanitizer (a second build,
+                                                     in <build_dir>/sanitize); `verify` runs it when [cpp] sanitize
+                                                     is true, or with --sanitize
+    python3 Scripts/cpp.py fuzz [TARGET]             libFuzzer with the sanitizers over the [cpp.fuzz] targets;
+                                                     --seconds N, --reproduce FILE for one input
     python3 Scripts/cpp.py run -- --help             the built binary, arguments passed through
     python3 Scripts/cpp.py install                   cmake --install, and a desktop entry too when
                                                      [cpp.service_menu] names one
@@ -51,6 +56,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import android
@@ -66,6 +72,9 @@ BUILD_DIR = os.path.join(REPO, project.get("cpp.build_dir", "build"))
 BUILD_TYPE = project.get("cpp.build_type", "RelWithDebInfo")
 GENERATOR = project.get("cpp.generator", "")
 CONFIGURE_ARGS = project.get("cpp.configure_args", [])
+
+# `verify` also runs the tests under the sanitizers. A second full build, so it is the project's choice.
+SANITIZE = bool(project.get("cpp.sanitize", False))
 
 # Where `install` puts things. ~/.local rather than /usr/local, because that needs root and a
 # desktop session carries ~/.local/bin in PATH.
@@ -254,6 +263,12 @@ def command_verify(arguments):
     if tests != 0:
         return tests
 
+    if (SANITIZE or arguments.sanitize) and not arguments.no_sanitize:
+        sanitized = command_sanitize(arguments)
+
+        if sanitized != 0:
+            return sanitized
+
     formatting = check_formatting(arguments)
 
     if formatting != 0:
@@ -290,16 +305,45 @@ def command_warnings(arguments):
 CTEST_SUMMARY = re.compile(r"(?P<percent>\d+)% tests passed, (?P<failed>\d+) tests failed "
                            r"out of (?P<total>\d+)")
 
+# What a sanitizer or libFuzzer prints to say what it found, and the two lines the C++ runtime prints for an
+# exception nothing caught (which a reader of files must never throw). Their text is English whatever the locale is,
+# and the lines carry a "N: " in front when ctest repeats a test's output verbosely.
+SANITIZER_REPORT = re.compile(r"^(?:\d+:\s)?(?P<line>(?:==\d+==)?ERROR: (?:Address|Leak)Sanitizer.*"
+                              r"|.*runtime error: .*|SUMMARY: \w+: .*|==\d+==ERROR: libFuzzer: .*"
+                              r"|terminate called after throwing .*|\s+what\(\):\s.*)$", re.MULTILINE)
+
+
+def sanitizer_reports(output):
+    """The lines of a test's or fuzzer's output that say what a sanitizer found, each once, in order.
+
+    The stack under them is for the person who follows the finding; these are what tells them there is one. An
+    exception that nothing caught is reported the same way: for a reader of files from outside it is a finding too.
+    """
+    lines = []
+
+    for match in SANITIZER_REPORT.finditer(output):
+        line = match["line"].strip()
+
+        if line not in lines:
+            lines.append(line)
+
+    return lines
+
 
 def command_test(arguments):
     print("\nTesting (ctest) ...")
 
-    if not os.path.isfile(os.path.join(BUILD_DIR, "CTestTestfile.cmake")):
+    return run_ctest(BUILD_DIR, ENV, arguments)
+
+
+def run_ctest(build_dir, environment, arguments):
+    """ctest in one build directory, with that build's environment (the sanitize build needs its own)."""
+    if not os.path.isfile(os.path.join(build_dir, "CTestTestfile.cmake")):
         print("  no tests registered - add_test() or enable_testing() in CMakeLists.txt")
 
         return 0
 
-    command = ["ctest", "--test-dir", BUILD_DIR, "--output-on-failure"]
+    command = ["ctest", "--test-dir", build_dir, "--output-on-failure"]
     name = getattr(arguments, "name", None)
 
     if name:
@@ -308,7 +352,7 @@ def command_test(arguments):
     if getattr(arguments, "details", False):
         command.append("--verbose")
 
-    completed = run(command)
+    completed = run(command, env=environment)
     output = completed.stdout + completed.stderr
     match = CTEST_SUMMARY.search(output)
 
@@ -339,6 +383,14 @@ def print_failures(output, detailed=False):
     """
     for match in FAILED_TEST.finditer(output):
         print(f"\n  {match['name']}  ({match['why']})")
+
+    reports = sanitizer_reports(output)
+
+    if reports:
+        print("\n  what the sanitizer found:")
+
+        for line in reports[:6]:
+            print(f"    {line}")
 
     if not detailed:
         print("\n  'test --details' repeats this with each test's full output")
@@ -570,6 +622,204 @@ def command_tidy(arguments):
     print("\n  'tidy --check NAME' lists every finding of one check")
 
     return 1
+
+
+SANITIZER_FLAGS = "-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+
+
+def sanitize_dir():
+    return os.path.join(BUILD_DIR, "sanitize")
+
+
+def sanitize_configure():
+    """The configure step of the sanitize tree: the everyday one with the sanitizers in every flag.
+
+    The linker flags too, because a test executable has to link the runtime; `-fno-sanitize-recover` makes the first
+    report stop the program, so a test fails instead of printing and going on.
+    """
+    flags = [f"-DCMAKE_{kind}_FLAGS={SANITIZER_FLAGS}" for kind in ("C", "CXX", "EXE_LINKER", "SHARED_LINKER")]
+    configure(sanitize_dir(), list(CONFIGURE_ARGS) + flags)
+
+
+def sanitize_environment():
+    """ENV plus the sanitizers' options: leaks reported, a stack with every undefined-behaviour finding, and the
+    project's suppressions for what it does not own (a Qt or KDE library's own leaks, say)."""
+    environment = dict(ENV)
+    environment["ASAN_OPTIONS"] = "detect_leaks=1:strict_string_checks=1"
+    environment["UBSAN_OPTIONS"] = "print_stacktrace=1:halt_on_error=1"
+    suppressions = project.path("cpp.sanitize_suppressions")
+
+    if suppressions is not None:
+        environment["LSAN_OPTIONS"] = f"suppressions={suppressions}"
+
+    return environment
+
+
+def command_sanitize(arguments):
+    """The tests under AddressSanitizer, UndefinedBehaviorSanitizer and LeakSanitizer, in <build_dir>/sanitize.
+
+    What C++ leaves to the program and a Rust compiler rules out: a read or write outside an object, a signed
+    overflow, a leak. They are found where a test goes. A test that never feeds a hostile file does not find what a
+    hostile file does, so a reader of external files wants tests for that (and `fuzz`); what this adds is that such a
+    test fails on the first report instead of passing by luck, and that undefined behaviour on the ordinary paths
+    shows.
+
+    Built incrementally in its own directory: the flags never change, so a warm build is as good as a clean one.
+    """
+    print(f"\nBuilding with ASan and UBSan ({BUILD_TYPE}) ...")
+    errors, _ = build(clean=getattr(arguments, "clean", False), build_dir=sanitize_dir(), prepare=sanitize_configure)
+
+    if errors:
+        print(f"\nSANITIZE BUILD FAILED - {len(errors)} error(s):\n")
+        show(errors)
+
+        if any("san" in error[3].lower() for error in errors):
+            print("\n  the sanitizer runtimes are separate packages: sudo dnf install libasan libubsan")
+
+        return 1
+
+    print("Testing under the sanitizers (ctest) ...")
+
+    return run_ctest(sanitize_dir(), sanitize_environment(), arguments)
+
+
+FUZZ_FLAGS = "-fsanitize=address,undefined,fuzzer-no-link -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+LIBFUZZER_DONE = re.compile(r"^#(?P<runs>\d+)\s+DONE\s+cov: (?P<cov>\d+) ft: (?P<features>\d+) corp: (?P<corpus>\d+)",
+                            re.MULTILINE)
+LIBFUZZER_ARTIFACT = re.compile(r"^(?:crash|oom|timeout|leak|slow-unit)-")
+
+
+def fuzz_dir():
+    return os.path.join(BUILD_DIR, "fuzz")
+
+
+def fuzz_configure():
+    """The configure step of the fuzz tree: clang, the sanitizers, and the option that switches the fuzz targets on.
+
+    `fuzzer-no-link` instruments the library for coverage without a second main(); the targets themselves link
+    libFuzzer (`-fsanitize=fuzzer`), which the project's CMakeLists says per target.
+    """
+    if not shutil.which("clang++"):
+        sys.exit("refused: clang++ is not installed - libFuzzer comes with clang (sudo dnf install clang compiler-rt).")
+
+    option = project.get("cpp.fuzz.option", "BUILD_FUZZING")
+    flags = [f"-DCMAKE_{kind}_FLAGS={FUZZ_FLAGS}" for kind in ("C", "CXX")]
+    flags += [f"-DCMAKE_{kind}_LINKER_FLAGS=-fsanitize=address,undefined" for kind in ("EXE", "SHARED")]
+    configure(fuzz_dir(), list(CONFIGURE_ARGS) + [f"-D{option}=ON", "-DCMAKE_C_COMPILER=clang",
+                                                  "-DCMAKE_CXX_COMPILER=clang++", *flags])
+
+
+def fuzz_binary(target):
+    """The executable a fuzz target was built to, wherever the project's CMake put it."""
+    for path in sorted(Path(fuzz_dir()).rglob(target)):
+        if path.is_file() and os.access(path, os.X_OK) and "CMakeFiles" not in path.parts:
+            return path
+
+    return None
+
+
+def fuzz_summary(output):
+    """(runs, coverage, features, corpus size) of libFuzzer's closing line, or None when it did not get that far."""
+    found = LIBFUZZER_DONE.findall(output)
+
+    return tuple(int(value) for value in found[-1]) if found else None
+
+
+def run_fuzzer(target, binary, seconds, reproduce=None):
+    """One target for `seconds`, or one input through it. Returns the exit code; prints what was found."""
+    work = Path(fuzz_dir()) / "corpus" / target
+    artifacts = Path(fuzz_dir()) / "artifacts" / target
+    work.mkdir(parents=True, exist_ok=True)
+    artifacts.mkdir(parents=True, exist_ok=True)
+    environment = sanitize_environment()
+    environment["UBSAN_OPTIONS"] = "print_stacktrace=1"
+
+    if reproduce:
+        command = [str(binary), str(reproduce)]
+    else:
+        # The first directory is where libFuzzer keeps what it finds; the checked-in seeds are only read.
+        command = [str(binary), str(work)]
+        seeds = project.path("cpp.fuzz.seeds_dir")
+
+        if seeds is not None and (seeds / target).is_dir():
+            command.append(str(seeds / target))
+
+        command += [f"-max_total_time={seconds}", f"-artifact_prefix={artifacts}/", "-rss_limit_mb=2048",
+                    "-timeout=20", f"-max_len={project.get('cpp.fuzz.max_len', 65536)}"]
+
+    # A second of slack: the file system's clock is coarser than time.time().
+    started = time.time() - 1
+    completed = run(command, env=environment)
+    output = completed.stdout + completed.stderr
+    summary = fuzz_summary(output)
+
+    if completed.returncode == 0:
+        if reproduce:
+            print(f"  {target}: that input runs clean")
+        elif summary:
+            runs, coverage, features, corpus = summary
+            print(f"  {target}: {seconds} s, {runs:,} runs, coverage {coverage}, {features} features, "
+                  f"corpus {corpus} - nothing found")
+        else:
+            print(f"  {target}: ran for {seconds} s - nothing found (no statistics in its output)")
+
+        return 0
+
+    print(f"  {target}: FOUND SOMETHING (exit {completed.returncode})")
+
+    for line in sanitizer_reports(output)[:6]:
+        print(f"    {line}")
+
+    new = sorted(path for path in artifacts.iterdir()
+                 if LIBFUZZER_ARTIFACT.match(path.name) and path.stat().st_mtime >= started)
+
+    for path in new:
+        print(f"    input: {os.path.relpath(path, REPO)}")
+        print(f"    again: python3 Scripts/cpp.py fuzz {target} --reproduce {os.path.relpath(path, REPO)}")
+
+    if not new and not sanitizer_reports(output):
+        print("\n".join(f"    {line}" for line in output.strip().splitlines()[-8:]))
+
+    return 1
+
+
+def command_fuzz(arguments):
+    """libFuzzer with ASan and UBSan over the project's fuzz targets, in <build_dir>/fuzz.
+
+    The targets are CMake targets, named in [cpp.fuzz] targets and added by the project's CMakeLists when the option of
+    [cpp.fuzz] option is on. Each is a `LLVMFuzzerTestOneInput` over one reader. What libFuzzer finds on its way is
+    kept in the build directory and used by the next run; the seeds a project checks in ([cpp.fuzz] seeds_dir, one
+    folder per target) are read only. It finds what the tests did not think of, which is why it is not part of
+    `verify`: it runs for as long as it is given.
+    """
+    targets = list(project.require("cpp.fuzz.targets"))
+
+    if arguments.target and arguments.target not in targets:
+        sys.exit(f"refused: {arguments.target!r} is not one of cpp.fuzz.targets ({', '.join(targets)}).")
+
+    if arguments.reproduce and not arguments.target:
+        sys.exit("refused: --reproduce needs the target the input belongs to.")
+
+    status = 0
+
+    for target in [arguments.target] if arguments.target else targets:
+        print(f"\nBuilding {target} (clang, ASan, UBSan, libFuzzer) ...")
+        errors, _ = build(build_dir=fuzz_dir(), target=target, prepare=fuzz_configure)
+
+        if errors:
+            print(f"\nBUILD FAILED - {len(errors)} error(s):\n")
+            show(errors)
+
+            return 1
+
+        binary = fuzz_binary(target)
+
+        if binary is None:
+            sys.exit(f"refused: the build wrote no {target} under {os.path.relpath(fuzz_dir(), REPO)}.")
+
+        status |= run_fuzzer(target, binary, arguments.seconds, arguments.reproduce)
+
+    return status
 
 
 def command_run(arguments):
@@ -1045,6 +1295,10 @@ def main():
     verify.add_argument("--details", action="store_true", help="Print each failing test's output")
     verify.add_argument("--no-format-check", action="store_true", help="Skip the clang-format comparison")
     verify.add_argument("--no-spdx-check", action="store_true", help="Skip the check for SPDX licence lines")
+    verify.add_argument("--sanitize", action="store_true",
+                        help="Also run the tests under ASan and UBSan, though [cpp] sanitize is not set")
+    verify.add_argument("--no-sanitize", action="store_true",
+                        help="Leave the sanitizer run out, though [cpp] sanitize is set")
     verify.set_defaults(handler=command_verify)
 
     build_command = subparsers.add_parser("build", help="Configure and build")
@@ -1072,6 +1326,18 @@ def main():
     tidy.add_argument("--check", help="List every finding of one check, e.g. bugprone-signed-bitwise")
     tidy.add_argument("--limit", type=int, default=40, help="How many findings to list (default 40)")
     tidy.set_defaults(handler=command_tidy)
+
+    sanitize = subparsers.add_parser("sanitize", help="The tests under ASan, UBSan and LeakSanitizer, in <build_dir>/sanitize")
+    sanitize.add_argument("name", nargs="?", help="Only tests whose name matches this")
+    sanitize.add_argument("--details", action="store_true", help="Also print each failing test's output")
+    sanitize.add_argument("--clean", action="store_true", help="Rebuild everything")
+    sanitize.set_defaults(handler=command_sanitize)
+
+    fuzz = subparsers.add_parser("fuzz", help="libFuzzer with ASan and UBSan over [cpp.fuzz] targets, in <build_dir>/fuzz")
+    fuzz.add_argument("target", nargs="?", help="One target (default: all of them)")
+    fuzz.add_argument("--seconds", type=int, default=30, help="How long each target runs (default 30)")
+    fuzz.add_argument("--reproduce", metavar="FILE", help="Run this one input through the target, e.g. a crash-... file")
+    fuzz.set_defaults(handler=command_fuzz)
 
     run_command = subparsers.add_parser("run", help="Build, then run the binary with the arguments passed through")
     run_command.add_argument("--debug", action="store_true", help="Build Debug first")
