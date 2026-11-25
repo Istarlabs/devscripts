@@ -10,6 +10,7 @@
 import datetime
 import importlib.util
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -31,6 +32,34 @@ assert rpm.read_version('[package]\nversion.workspace = true\n', "Cargo.toml") i
 assert rpm.read_version("project(gputaskman-qt VERSION 0.3.1 LANGUAGES CXX)", "CMakeLists.txt") == "0.3.1"
 assert rpm.read_version("project(x LANGUAGES CXX)", "CMakeLists.txt") is None
 assert rpm.read_version("<PropertyGroup><Version>1.4.0</Version></PropertyGroup>", "App.csproj") == "1.4.0"
+
+# The git height of a CMake VERSION x.y: commits since the version line last changed, 0 on that commit.
+with tempfile.TemporaryDirectory() as scratch:
+    folder = Path(scratch)
+    cmake = folder / "CMakeLists.txt"
+
+    def commit(message):
+        subprocess.run(["git", "-C", scratch, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", scratch, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message],
+                       check=True)
+
+    assert rpm.with_height("0.1", cmake) == "0.1.0", "no repository at all is height 0"
+    subprocess.run(["git", "init", "-q", scratch], check=True)
+    cmake.write_text("cmake_minimum_required(VERSION 3.20)\nproject(x VERSION 0.1 LANGUAGES CXX)\n")
+    commit("start")
+    assert rpm.with_height("0.1", cmake) == "0.1.0"
+    cmake.write_text(cmake.read_text().replace("3.20", "3.25"))  # cmake_minimum_required's VERSION is not ours
+    commit("minimum")
+    (folder / "a.cpp").write_text("x")
+    commit("a")
+    cmake.write_text(cmake.read_text() + "add_subdirectory(src)\n")  # another line of the file is no new version
+    commit("b")
+    assert rpm.with_height("0.1", cmake) == "0.1.3"
+    cmake.write_text(cmake.read_text().replace("VERSION 0.1", "VERSION 0.2"))
+    commit("bump")
+    assert rpm.with_height("0.2", cmake) == "0.2.0"
+    assert rpm.with_height("0.2.5", cmake) == "0.2.5", "three numbers are left alone"
+    assert rpm.with_height("1.0", folder / "Cargo.toml") == "1.0"
 
 assert rpm.release_stamp(datetime.datetime(2026, 11, 14, 9, 5)) == "202611140905"
 

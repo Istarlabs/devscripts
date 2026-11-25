@@ -22,6 +22,40 @@
 - A header declares what its users need and nothing else; a file that grows a second responsibility is
   split.
 
+## Version
+
+`project(NAME VERSION x.y)` with two numbers: the third is the git height, the commits since that line last
+changed, as Nerdbank.GitVersioning gives it to the .NET projects. `rpm.py` counts it for the package; the
+CMakeLists.txt counts it the same way for the binary, right after `project()`:
+
+```cmake
+# The third number is the git height; Scripts/rpm.py counts the same way, so the package and the binary agree.
+find_package(Git QUIET)
+set(VERSION_HEIGHT 0)
+if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    execute_process(COMMAND "${GIT_EXECUTABLE}" log -1 --format=%H -G "project\\(.*VERSION" -- CMakeLists.txt
+                    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" OUTPUT_VARIABLE VERSION_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(VERSION_COMMIT)
+        set(VERSION_RANGE "${VERSION_COMMIT}..HEAD")
+    else()
+        set(VERSION_RANGE HEAD)
+    endif()
+    execute_process(COMMAND "${GIT_EXECUTABLE}" rev-list --count ${VERSION_RANGE}
+                    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" OUTPUT_VARIABLE VERSION_HEIGHT OUTPUT_STRIP_TRAILING_WHITESPACE)
+    # Every commit writes HEAD's reflog, so a build after one configures again and carries the new number.
+    execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --path-format=absolute --git-path logs/HEAD
+                    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" OUTPUT_VARIABLE HEAD_LOG OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(EXISTS "${HEAD_LOG}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${HEAD_LOG}")
+    endif()
+endif()
+set(PROJECT_VERSION_PATCH ${VERSION_HEIGHT})
+set(PROJECT_VERSION "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${VERSION_HEIGHT}")
+set(${PROJECT_NAME}_VERSION "${PROJECT_VERSION}")
+```
+
+A new minor or major is a change of that line, which starts the count at 0 again.
+
 ## Scripts
 
 | Task | Command |
