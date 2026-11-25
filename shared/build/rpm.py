@@ -20,7 +20,8 @@ minimal spec around that tree and runs rpmbuild, which still finds the libraries
     summary = "An htop for what is inside the GPU"
     license = "MIT"
     url = "https://github.com/..."                          optional
-    version_file = "Cargo.toml"                              Cargo.toml, CMakeLists.txt or a .csproj/.props
+    version_file = "Cargo.toml"                              Cargo.toml, CMakeLists.txt or a .csproj/.props;
+                                                             a CMake VERSION x.y gets the git height as .z
     build = ["cargo build --release -p gputaskman"]          shell commands in the repository; {stage}, {version}
     files = { "target/release/gputaskman" = "/usr/bin/gputaskman" }   repository path (file or folder) -> target
     links = { "/usr/bin/app" = "/usr/lib/app/App" }          optional symbolic links
@@ -84,6 +85,36 @@ def read_version(text, filename):
 
     match = re.search(r"<Version>\s*([^<\s]+)\s*</Version>", text)
     return match.group(1) if match else None
+
+
+# The line a project's version lives on, as `git log -G` looks for it (an extended regex: an unescaped parenthesis
+# is an unbalanced group, and git then silently matches nothing). The CMakeLists.txt that counts its own height has
+# to use the same pattern, or the package and the binary differ.
+CMAKE_VERSION_LINE = r"project\(.*VERSION"
+
+
+def git_height(version_file):
+    """How many commits came since the one that last changed the project(... VERSION) line of `version_file`:
+    Nerdbank.GitVersioning's git height, 0 on the commit that sets a new version. 0 outside a git checkout too."""
+    folder = version_file.parent
+
+    def git(*arguments):
+        completed = subprocess.run(["git", "-C", str(folder), *arguments], capture_output=True, text=True)
+        return completed.stdout.strip() if completed.returncode == 0 else None
+
+    changed = git("log", "-1", "--format=%H", "-G", CMAKE_VERSION_LINE, "--", version_file.name)
+    if changed is None:
+        return 0
+
+    count = git("rev-list", "--count", f"{changed}..HEAD" if changed else "HEAD")
+    return int(count) if count else 0
+
+
+def with_height(version, version_file):
+    """A CMake version of two numbers gets the git height as its third; any other is left as it is."""
+    if version_file.name == "CMakeLists.txt" and re.fullmatch(r"\d+\.\d+", version):
+        return f"{version}.{git_height(version_file)}"
+    return version
 
 
 def package_configs(rpm):
@@ -227,6 +258,7 @@ def metadata(config):
     version = read_version(version_file.read_text(encoding="utf-8"), version_file.name)
     if not version:
         sys.exit(f"refused: no version in {version_file.relative_to(project.root)}")
+    version = with_height(version, version_file)
 
     return {
         "name": require(config, "name"),
