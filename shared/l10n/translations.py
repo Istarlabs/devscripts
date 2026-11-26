@@ -462,9 +462,14 @@ def create_area(arguments):
     with open(json_path, "w", encoding="utf-8") as handle:
         handle.write("{}\n")
 
-    # The header is identical in every area and carries the resx schema; clone it rather than
-    # reproducing 40 lines of XSD here that would then drift.
-    with open(os.path.join(area_dir(TEMPLATE_AREA), f"{TEMPLATE_AREA}.resx"), encoding="utf-8") as handle:
+    # The header is identical in every area and carries the resx schema; clone the project's own so
+    # it cannot drift. The very first area has nothing to clone, so it gets the copy shipped here.
+    template_path = os.path.join(area_dir(TEMPLATE_AREA), f"{TEMPLATE_AREA}.resx")
+
+    if not os.path.isfile(template_path):
+        template_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resx-header.xml")
+
+    with open(template_path, encoding="utf-8") as handle:
         template = handle.read()
 
     header = template[:template.index("\n", template.rindex("</resheader>")) + 1]
