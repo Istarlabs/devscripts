@@ -135,6 +135,23 @@ def main():
         records =json.loads((root / "Scripts" / "translations" / "translated-from" / "de.json").read_text())
         check("remove drops the record", records, {})
 
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        make_project(root)
+
+        for leftover in ("Area.resx", "Area.Designer.cs"):
+            (root / "Res" / leftover).unlink()
+
+        (root / "Scripts" / "translations" / "Area.json").unlink()
+        (root / "Res" / "Res.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk">\n</Project>\n')
+
+        created = run(root, "new-area", "FirstResources")
+        check("new-area creates the first area with no template to clone", created.returncode, 0)
+
+        resx = (root / "Res" / "FirstResources.resx").read_text()
+        check("the first area gets the shipped resx header",
+              "<resheader name=\"writer\">" in resx and resx.endswith("</root>\n"), True)
+
     print()
 
     if FAILURES:

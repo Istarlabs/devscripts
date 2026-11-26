@@ -68,6 +68,10 @@ The base class maps `CreatedBy`/`ModifiedBy`, gives the two timestamps a `now()`
 
 `builder.ToTable(name, schema)` always names the schema - a table without it lands in `public`. The schema names are constants in one class.
 
+The property helpers below (`HasStringToEnumConversion()`, `HasDecimalColumn()`, `HasJsonColumn()`) are extension methods in
+**`Istarnova.EfCore.Extensions`**, not in `.Configurations`: a configurations project needs `global using Istarnova.EfCore.Extensions;`
+beside `global using Istarnova.EfCore.Configurations;`, or every call fails with `CS1061`.
+
 **Iron rule - enums are stored as strings, never as ints:** `builder.Property(e => e.Status).HasStringToEnumConversion().HasMaxLength(20)`.
 Why it is not negotiable: the data leaves the system (a data request, a CSV, a dump), and `Type = 1` is meaningless to whoever receives it; queries read
 `WHERE "Status" = 'Done'` without the source; and renumbering an enum can never silently reinterpret stored rows. If the number carries real meaning (an

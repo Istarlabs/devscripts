@@ -11,7 +11,7 @@ machine's git and SDK are localized, so `grep`-ing for "nothing to commit" silen
 
 Everything below reads --porcelain or --json and never the human-readable text.
 
-    python3 Scripts/repo.py init [--description T]    a directory that is no repository yet: git init + a private GitHub repo + labels
+    python3 Scripts/repo.py init [--description T]    git init (unless there is one) + a private GitHub repo as origin + labels
     python3 Scripts/repo.py labels                    the shared labels and the project's [[repo.labels]], on an existing repo
     python3 Scripts/repo.py topics [--add T] [--remove T] [--repo OWNER/NAME]   the topics of the GitHub repository
     python3 Scripts/repo.py status                    branch, upstream, staged/unstaged, ahead/behind
@@ -192,18 +192,24 @@ def command_init(arguments):
     Refuses without a .gitignore, because the build directory is what gets committed by accident and
     is the one thing that is hard to take back out of a pushed history. If GitHub refuses (the name
     exists, no network), the `.git` this created is removed again, so the same call can be repeated.
+
+    A directory that is already a repository but has no `origin` yet (started with a plain
+    `git init`) only gets the GitHub repository, the remote and the labels; its `.git` is never
+    removed. One that already has an `origin` is refused.
     """
     git_dir = os.path.join(REPO, ".git")
+    existing = os.path.exists(git_dir)
 
-    if os.path.exists(git_dir):
-        refuse("this directory is already a repository")
+    if existing and run(["git", "remote", "get-url", "origin"], check=False).returncode == 0:
+        refuse("this repository already has an origin remote")
 
     if not os.path.isfile(os.path.join(REPO, ".gitignore")):
         refuse("no .gitignore - copy one in first, so the build directory is not committed by accident")
 
     name = arguments.name or project.get("name", os.path.basename(REPO))
 
-    run(["git", "init", "-b", MAIN_BRANCH])
+    if not existing:
+        run(["git", "init", "-b", MAIN_BRANCH])
 
     command = ["gh", "repo", "create", name, "--public" if arguments.public else "--private",
                "--source", ".", "--remote", "origin"]
@@ -214,10 +220,12 @@ def command_init(arguments):
     result = run(command, check=False)
 
     if result.returncode != 0:
-        shutil.rmtree(git_dir)
+        if not existing:
+            shutil.rmtree(git_dir)
+
         refuse((result.stderr or result.stdout or "").strip())
 
-    print(f"initialised on {MAIN_BRANCH}, "
+    print(("" if existing else f"initialised on {MAIN_BRANCH}, ") +
           f"{'public' if arguments.public else 'private'} repository {name} created: {out(['git', 'remote', 'get-url', 'origin'])}")
 
     # The repository exists by now, so a label that fails is reported, not undone: `labels` repeats it.
@@ -2047,7 +2055,8 @@ def main():
     uncommit.add_argument("--allow-master", action="store_true")
 
     init = subparsers.add_parser(
-        "init", help="git init plus a new GitHub repository (private unless --public); needs a .gitignore")
+        "init", help="git init (unless done) plus a new GitHub repository as origin (private unless --public); "
+                     "needs a .gitignore, refuses an existing origin")
     init.add_argument("--name", help="Repository name; default: name in project.toml")
     init.add_argument("--description", help="The one-line description shown on GitHub")
     init.add_argument("--public", action="store_true", help="Public instead of private")

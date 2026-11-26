@@ -208,8 +208,8 @@ env_prefix = "{prefix}"
 # [istarnova]                       # uses Istarnova.EfCore / Blazor / Blazor.FluentUI / AspNetCore: brings the
 # raw_grid_baseline = 0             # blazor-ui and data-layer skills, a skill map, and the raw-grid check
 
-[spdx]
-holder = "{name} Contributors"
+[spdx]                              # both guessed: check them before `spdx.py apply` writes them everywhere
+holder = "{holder}"
 licence = "AGPL-3.0-or-later"
 # exclude = ["{name}/wwwroot/lib/"]
 
@@ -296,7 +296,9 @@ def starter_config(root):
     language = detect_language(root)
     name = solutions[0].stem if solutions else root.name
     prefix = "".join(part[0] for part in _words(name)).upper() or name[:3].upper()
+    git_user = subprocess.run(["git", "config", "user.name"], cwd=root, capture_output=True, text=True).stdout.strip()
     values = dict(name=name, prefix=prefix, prefix_lower=prefix.lower(), lower=name.lower(),
+                  holder=git_user or f"{name} Contributors",
                   solution=solutions[0].name if solutions else f"{name}.sln")
 
     others = "".join(
@@ -595,6 +597,7 @@ def main():
     # run already brings that language's script, skills, hooks and guidelines.
     if new_config:
         config.write_text(starter_config(root), encoding="utf-8")
+        print("Scripts/project.toml: [spdx] holder and licence are guesses - set them before `spdx.py apply`")
 
     blocks = configured_blocks(config)
     wanted = [name for name, block in SHAREABLE.items() if block is None or block in blocks]
