@@ -30,6 +30,8 @@ Everything below reads --porcelain or --json and never the human-readable text.
     python3 Scripts/repo.py commit -m "fix(x): ..." --all
     python3 Scripts/repo.py uncommit                  undo the last commit, changes stay staged
     python3 Scripts/repo.py log [PATH ...] [-n 20]    recent commits, one line each
+    python3 Scripts/repo.py log --grep 'importer' -i  commits whose message matches, ignoring case
+    python3 Scripts/repo.py log -S RenderWidget       commits that added or removed this string
     python3 Scripts/repo.py blame FILE --lines 24,48  who wrote it, and what that commit was about
     python3 Scripts/repo.py push                      push the current branch, setting upstream
     python3 Scripts/repo.py move OLD NEW [OLD NEW]    git mv in pairs, all of them or none
@@ -271,6 +273,15 @@ def command_diff(arguments):
 def command_log(arguments):
     """The recent commits, one line each, optionally only those touching the given paths."""
     command = ["git", "log", f"-{arguments.count}", "--format=%h  %ad  %<(14,trunc)%an  %s", "--date=short"]
+
+    if arguments.grep:
+        command.append(f"--grep={arguments.grep}")
+
+    if arguments.pickaxe:
+        command.append(f"-S{arguments.pickaxe}")
+
+    if arguments.ignore_case:
+        command.append("--regexp-ignore-case")
 
     if arguments.range:
         command.append(arguments.range)
@@ -2021,6 +2032,10 @@ def main():
     log.add_argument("paths", nargs="*", help="Only commits touching these paths")
     log.add_argument("-n", "--count", type=int, default=20, help="How many (default 20)")
     log.add_argument("--range", help="A revision range as git takes it: master..HEAD")
+    log.add_argument("--grep", help="Only commits whose message matches this regular expression")
+    log.add_argument("-S", dest="pickaxe", metavar="STRING",
+                     help="Only commits that change how often STRING occurs: added or removed")
+    log.add_argument("-i", "--ignore-case", action="store_true", help="Case-insensitive --grep")
 
     blame = subparsers.add_parser(
         "blame", help="Who wrote these lines, in which commit, and what that commit was about")
