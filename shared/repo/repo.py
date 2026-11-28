@@ -25,6 +25,7 @@ Everything below reads --porcelain or --json and never the human-readable text.
                                                       one branch carrying several, for one test round
     python3 Scripts/repo.py test-branch test/import --delete   it never belonged on the remote
     python3 Scripts/repo.py land                      waived change: master fast-forwards to this branch, pushed, branch deleted
+    python3 Scripts/repo.py devscripts                the .devscripts submodule to the newest devscripts, staged
     python3 Scripts/repo.py commit --file msg.md      commit
     python3 Scripts/repo.py commit --signoff --file msg.md   with Signed-off-by, as contributors do
     python3 Scripts/repo.py commit -m "fix(x): ..." --all
@@ -387,6 +388,32 @@ def fast_forward_ref(branch):
     checkout that follows then simply uses what is there.
     """
     run(["git", "fetch", "origin", f"{branch}:{branch}"], check=False)
+
+
+def command_devscripts(_arguments):
+    """Move the .devscripts submodule to the newest devscripts on the default branch of its origin, and stage it.
+
+    The submodule is what a contributor or CI runs - this machine uses its own checkout first - so it ages
+    silently; nothing local breaks when it is months behind. Only the pointer is staged: committing stays the
+    `commit` step, on a branch like any other change."""
+    submodule = os.path.join(REPO, ".devscripts")
+
+    if not os.path.isfile(os.path.join(REPO, ".gitmodules")) or not os.path.exists(os.path.join(submodule, ".git")):
+        refuse("no .devscripts submodule here (`git submodule update --init` if it was never checked out)")
+
+    before = out(["git", "-C", submodule, "rev-parse", "--short", "HEAD"])
+    run(["git", "-C", submodule, "fetch", "--quiet", "origin"])
+    head = out(["git", "-C", submodule, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+    run(["git", "-C", submodule, "checkout", "--quiet", "--detach", head])
+    after = out(["git", "-C", submodule, "rev-parse", "--short", "HEAD"])
+
+    if before == after:
+        print(f".devscripts already at {after} ({head})")
+        return
+
+    run(["git", "add", ".devscripts"])
+    count = out(["git", "-C", submodule, "rev-list", "--count", f"{before}..{after}"])
+    print(f".devscripts {before} -> {after} ({count} commit(s) on {head}), staged")
 
 
 def command_switch(arguments):
@@ -1993,6 +2020,9 @@ def main():
     branches.add_argument("--prune", action="store_true",
                           help="Delete the landed ones, here and on origin")
 
+    subparsers.add_parser(
+        "devscripts", help="Move the .devscripts submodule to the newest devscripts and stage it")
+
     switch = subparsers.add_parser(
         "switch", help=f"Move to a branch that already exists, pulling {MAIN_BRANCH}")
     switch.add_argument("name")
@@ -2225,6 +2255,7 @@ def main():
     "topics": command_topics,
         "status": command_status, "diff": command_diff,
         "branch": command_branch, "branches": command_branches, "switch": command_switch, "land": command_land,
+        "devscripts": command_devscripts,
         "test-branch": command_test_branch, "sync": command_sync,
         "commit": command_commit,
         "log": command_log, "blame": command_blame, "uncommit": command_uncommit,
