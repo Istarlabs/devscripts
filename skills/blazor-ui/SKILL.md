@@ -109,6 +109,9 @@ Each has cost somebody a debugging session.
   script loads throws `ObjectDisposedException`. Decide what to show first, then render once.
 - **Never a `FluentSelect` over a list that can grow.** A picker that searches in the database is the answer; a raw `FluentAutocomplete` is a rewrite in
   v5 and `Multiple` defaults to `true`.
+- **A component with its own `@rendermode` in the main layout sits inside `<AuthorizeView>`.** The sign-in pages render statically but share the
+  layout; one interactive component there makes `blazor.web.js` open a circuit, and the authenticated-user fallback policy answers `/_blazor/negotiate`
+  with 401 ("Failed to start the circuit" on the sign-in page).
 
 ## Localization in the UI
 
