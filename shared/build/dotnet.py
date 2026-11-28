@@ -1091,6 +1091,26 @@ def command_ef(arguments):
 
 
 def command_android(arguments):
+    if arguments.action == "pair":
+        # Wireless debugging pairs on its own port with a six-digit code, both shown on the phone under
+        # "Pair device with pairing code"; the port to connect to afterwards is a different one, which adb
+        # finds by mDNS, so the devices list follows.
+        if not arguments.address or not arguments.code:
+            sys.stderr.write("refused: pair needs --address HOST:PORT and --code CODE from the phone's pairing dialog\n")
+
+            return 2
+
+        result = subprocess.run([android.adb_path(), "pair", arguments.address, arguments.code],
+                                capture_output=True, text=True, errors="replace")
+        print((result.stdout + result.stderr).strip())
+
+        if result.returncode != 0 or "Successfully paired" not in result.stdout:
+            return 1
+
+        print(android.adb("devices", "-l", check=False).stdout.strip())
+
+        return 0
+
     if arguments.action == "devices":
         android.connect()
         print(android.adb("devices", "-l").stdout.strip())
@@ -1802,7 +1822,10 @@ def main():
     script.set_defaults(handler=command_script)
 
     android_parser = subparsers.add_parser("android", help="MAUI app: signed .apk, adb install, start")
-    android_parser.add_argument("action", choices=["build", "install", "devices", "run", "dependencies", "release"])
+    android_parser.add_argument("action", choices=["build", "install", "devices", "pair", "run", "dependencies", "release"])
+    android_parser.add_argument("--address", metavar="HOST:PORT",
+                                help="pair: the address the phone's pairing dialog shows (not the connect port)")
+    android_parser.add_argument("--code", help="pair: the six-digit pairing code")
     android_parser.add_argument("--release", action="store_true", help="Release configuration, signed with [android.signing]")
     android_parser.add_argument("--no-build", action="store_true", help="install: use the .apk already built")
     android_parser.add_argument("--ref", default="HEAD",
