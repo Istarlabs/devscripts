@@ -488,6 +488,36 @@ def command_land(_arguments):
     delete_branch(name)
 
 
+def sync_main_branch():
+    """On the main branch: put the commits not pushed yet on top of origin's, so the push goes through.
+
+    A repository that is committed to on its main branch directly - a GitHub wiki has no pull requests - is
+    rejected at the push once the remote moved on (an edit in the browser, another machine). Only local,
+    unpushed commits are rebased, so nothing anyone else has is rewritten. A conflict aborts the rebase and
+    names the files: the branch stays exactly as it was."""
+    if out(["git", "status", "--porcelain", "--untracked-files=no"]):
+        refuse("the working tree has changes; commit them first")
+
+    run(["git", "fetch", "origin"], check=False)
+    upstream = f"origin/{MAIN_BRANCH}"
+    ahead = int(out(["git", "rev-list", "--count", f"{upstream}..HEAD"]))
+    behind = int(out(["git", "rev-list", "--count", f"HEAD..{upstream}"]))
+
+    if behind == 0:
+        print(f"{MAIN_BRANCH} is not behind {upstream}" + (f"; {ahead} commit(s) to push" if ahead else ""))
+        return
+
+    rebased = run(["git", "rebase", upstream], check=False)
+
+    if rebased.returncode != 0:
+        conflicted = out(["git", "diff", "--name-only", "--diff-filter=U"]).splitlines()
+        run(["git", "rebase", "--abort"], check=False)
+        refuse(f"the {ahead} local commit(s) conflict with {upstream} in: {', '.join(conflicted) or '?'}; "
+               f"nothing changed")
+
+    print(f"{MAIN_BRANCH}: {behind} commit(s) from {upstream} taken in, {ahead} local commit(s) on top - push next")
+
+
 def command_sync(arguments):
     """Bring the current branch up to date with the main branch, by merging it in.
 
@@ -510,7 +540,8 @@ def command_sync(arguments):
     branch = current_branch()
 
     if branch == MAIN_BRANCH:
-        refuse(f"already on {MAIN_BRANCH}; sync is for a branch that has to catch up with it")
+        sync_main_branch()
+        return
 
     if in_progress:
         refuse("a merge is already open: resolve it and commit, or sync --abort")
