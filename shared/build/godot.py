@@ -16,6 +16,7 @@ that changes on every pairing.
     python3 Scripts/godot.py export --preset Linux --output build/game.x86_64
     python3 Scripts/godot.py templates                download, verify and install the export templates
     python3 Scripts/godot.py keystore                 create the debug keystore the editor settings point to
+    python3 Scripts/godot.py keystore --release       create the release keystore of [godot.signing]
     python3 Scripts/godot.py pair HOST:PORT CODE      adb wireless pairing (Developer options > Wireless debugging)
     python3 Scripts/godot.py devices                  adb devices
     python3 Scripts/godot.py install                  adb install -r the exported APK, then start the app
@@ -42,6 +43,11 @@ Config, all optional, in Scripts/project.toml:
     # device = "192.168.1.44:41234"    adb over WLAN, connected on demand; {PREFIX}_GODOT_DEVICE overrides
     # package = "de.example.game"        default: package/unique_name of the preset
 
+    [godot.signing]                      `export --release`; handed to Godot as GODOT_ANDROID_KEYSTORE_RELEASE_*
+    # keystore = "~/.config/kgames-signing/kgames.keystore"
+    # alias = "kgames"
+    # password_file = "~/.config/kgames-signing/password"     store and key share it (PKCS12)
+
     [godot.desktop]                      `desktop` and `rpm`; both need a preset named "Linux" and an .svg config/icon
     # name = "kmemory"                   file, binary, package name; default: lower-case project name
     # summary = "..."                    .desktop Comment and rpm Summary; default: the project name
@@ -58,6 +64,7 @@ import glob
 import hashlib
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -177,10 +184,11 @@ def package_name():
     return project.get("godot.package") or preset_value(preset_name(), "package/unique_name")
 
 
-def run_godot(arguments, timeout=900):
+def run_godot(arguments, timeout=900, environment=None):
     """Run the editor with a filter on its output: progress bars and colours out, messages in."""
     process = subprocess.run([godot_binary(), "--headless", "--path", REPO, *arguments],
-                             capture_output=True, text=True, timeout=timeout)
+                             capture_output=True, text=True, timeout=timeout,
+                             env={**os.environ, **(environment or {})})
     lines = [ANSI.sub("", line) for line in (process.stdout + process.stderr).splitlines()]
     lines = [line for line in lines if not NOISE.search(line) and "shutdown_adb_on_exit" not in line
              and "editor_settings.cpp" not in line]
@@ -263,7 +271,9 @@ def command_export(arguments):
     output = output_path(arguments)
     os.makedirs(os.path.dirname(os.path.join(REPO, output)) or REPO, exist_ok=True)
 
-    code, lines = run_godot(["--export-release" if arguments.release else "--export-debug", preset, output])
+    environment = release_signing() if arguments.release else None
+    code, lines = run_godot(["--export-release" if arguments.release else "--export-debug", preset, output],
+                            environment=environment)
     exported = os.path.isfile(os.path.join(REPO, output))
 
     if code != 0 or not exported:
@@ -315,7 +325,71 @@ def command_templates(_):
     print(f"installed into {target}")
 
 
-def command_keystore(_):
+def signing_config():
+    """Keystore, alias and password file of [godot.signing], or a refusal naming the missing key."""
+    keystore = project.get("godot.signing.keystore")
+    alias = project.get("godot.signing.alias")
+    password_file = project.get("godot.signing.password_file")
+
+    if not (keystore and alias and password_file):
+        refuse("a release build needs [godot.signing] keystore, alias and password_file in Scripts/project.toml")
+
+    return expand(keystore), alias, expand(password_file)
+
+
+def release_signing():
+    """The variables Godot reads the release keystore from, so no password lands in export_presets.cfg."""
+    keystore, alias, password_file = signing_config()
+
+    if not (os.path.isfile(keystore) and os.path.isfile(password_file)):
+        refuse(f"{keystore} or {password_file} does not exist - `keystore --release` creates both")
+
+    return {
+        "GODOT_ANDROID_KEYSTORE_RELEASE_PATH": keystore,
+        "GODOT_ANDROID_KEYSTORE_RELEASE_USER": alias,
+        "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD": Path(password_file).read_text(encoding="utf-8").strip(),
+    }
+
+
+def create_release_keystore():
+    """A new release keystore with a generated password. It signs every later update: lost, the app can only be
+    installed anew, which deletes its data on the phone - so it refuses to overwrite one."""
+    keystore, alias, password_file = signing_config()
+
+    for path in (keystore, password_file):
+        if os.path.exists(path):
+            refuse(f"{path} already exists")
+
+    os.makedirs(os.path.dirname(keystore), mode=0o700, exist_ok=True)
+    os.makedirs(os.path.dirname(password_file), mode=0o700, exist_ok=True)
+
+    descriptor = os.open(password_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(secrets.token_urlsafe(32) + "\n")
+
+    holder = project.get("spdx.holder") or project.name
+    keytool = os.path.join(java_path(), "bin", "keytool") if java_path() else "keytool"
+    # :file keeps the password off the command line, where any process listing would show it.
+    result = subprocess.run([keytool, "-genkeypair", "-storetype", "PKCS12", "-keystore", keystore, "-alias", alias,
+                             "-storepass:file", password_file, "-keypass:file", password_file,
+                             "-keyalg", "RSA", "-keysize", "4096", "-validity", "10000",
+                             "-dname", f"CN={holder}, O={project.name}"])
+
+    if result.returncode != 0:
+        os.remove(password_file)
+        sys.exit(result.returncode)
+
+    os.chmod(keystore, 0o600)
+    print(f"created {keystore} (alias {alias}), password in {password_file}\n"
+          "Back both up: without them no later release installs over this one.")
+    sys.exit(0)
+
+
+def command_keystore(arguments):
+    if arguments.release:
+        create_release_keystore()
+
     path = expand(editor_setting("export/android/debug_keystore") or "~/.local/share/godot/keystores/debug.keystore")
 
     if os.path.exists(path):
@@ -594,7 +668,9 @@ def main():
     export.add_argument("--preset")
     export.add_argument("--output")
     commands.add_parser("templates")
-    commands.add_parser("keystore")
+    keystore = commands.add_parser("keystore")
+    keystore.add_argument("--release", action="store_true",
+                          help="create the release keystore [godot.signing] names, with a generated password")
     pair = commands.add_parser("pair")
     pair.add_argument("endpoint")
     pair.add_argument("code")
